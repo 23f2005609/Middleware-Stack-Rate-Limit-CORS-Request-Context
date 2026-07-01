@@ -1,36 +1,36 @@
 import time
 import uuid
+import os
 from collections import defaultdict
 from fastapi import FastAPI, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Configuration
-ALLOWED_ORIGINS = ["https://app-tufp93.example.com", "http://localhost:3000"]
-RATE_LIMIT_BUCKET = 10
-RATE_LIMIT_WINDOW = 10  # seconds
+# 1. CORS Configuration (Use built-in middleware for preflight)
+# ADD the origin of the exam page here as well
+ALLOWED_ORIGINS = [
+    "https://app-tufp93.example.com", 
+    "http://localhost:3000",
+    "https://exam-page-origin.com" # <--- ADD THE GRADER'S URL HERE IF KNOWN
+]
 
-# State
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 2. Rate Limiting and Context Middleware
 rate_limit_store = defaultdict(lambda: {"count": 0, "window_start": time.time()})
+RATE_LIMIT_BUCKET = 10
+RATE_LIMIT_WINDOW = 10
 
 @app.middleware("http")
-async def main_middleware(request: Request, call_next):
-    # 1. CORS Logic: Handle Preflight (OPTIONS) requests
-    if request.method == "OPTIONS":
-        origin = request.headers.get("Origin")
-        if origin in ALLOWED_ORIGINS:
-            return Response(
-                status_code=200,
-                headers={
-                    "Access-Control-Allow-Origin": origin,
-                    "Access-Control-Allow-Credentials": "true",
-                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "X-Request-ID, X-Client-Id, Content-Type",
-                }
-            )
-        return Response(status_code=403) # Forbidden if not an allowed origin
-
-    # 2. Rate Limiting Logic
+async def context_and_rate_limit(request: Request, call_next):
+    # Rate Limiting
     client_id = request.headers.get("X-Client-Id", "anonymous")
     now = time.time()
     data = rate_limit_store[client_id]
@@ -43,31 +43,20 @@ async def main_middleware(request: Request, call_next):
             return Response(status_code=status.HTTP_429_TOO_MANY_REQUESTS, content="Rate limit exceeded")
         data["count"] += 1
 
-    # 3. Request Context Logic
+    # Request Context
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = request_id
     
-    # Process request
     response = await call_next(request)
     
-    # 4. Inject ID into Response
+    # Inject ID
     response.headers["X-Request-ID"] = request_id
-    
-    # Add CORS headers to the actual GET response
-    origin = request.headers.get("Origin")
-    if origin in ALLOWED_ORIGINS:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-
     return response
+
 @app.get("/ping")
 async def ping(request: Request):
-    return {
-        "email": "your-email@example.com", 
-        "request_id": request.state.request_id
-    }
+    return {"email": "your-email@example.com", "request_id": request.state.request_id}
 
-import os
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 9000))
