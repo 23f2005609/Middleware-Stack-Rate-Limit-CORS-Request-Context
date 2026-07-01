@@ -15,7 +15,22 @@ rate_limit_store = defaultdict(lambda: {"count": 0, "window_start": time.time()}
 
 @app.middleware("http")
 async def main_middleware(request: Request, call_next):
-    # --- 1. Rate Limiting Logic ---
+    # 1. CORS Logic: Handle Preflight (OPTIONS) requests
+    if request.method == "OPTIONS":
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            return Response(
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "X-Request-ID, X-Client-Id, Content-Type",
+                }
+            )
+        return Response(status_code=403) # Forbidden if not an allowed origin
+
+    # 2. Rate Limiting Logic
     client_id = request.headers.get("X-Client-Id", "anonymous")
     now = time.time()
     data = rate_limit_store[client_id]
@@ -28,27 +43,23 @@ async def main_middleware(request: Request, call_next):
             return Response(status_code=status.HTTP_429_TOO_MANY_REQUESTS, content="Rate limit exceeded")
         data["count"] += 1
 
-    # --- 2. Request Context Logic ---
+    # 3. Request Context Logic
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = request_id
     
     # Process request
     response = await call_next(request)
     
-    # --- 3. CORS & Response Headers ---
-    # Inject Request ID
+    # 4. Inject ID into Response
     response.headers["X-Request-ID"] = request_id
     
-    # Strict CORS Logic
+    # Add CORS headers to the actual GET response
     origin = request.headers.get("Origin")
     if origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "X-Request-ID, X-Client-Id, Content-Type"
 
     return response
-
 @app.get("/ping")
 async def ping(request: Request):
     return {
